@@ -1,0 +1,84 @@
+
+$Stopwatch = [system.diagnostics.stopwatch]::startNew()
+
+#You can point ComputerList to a text file like this -
+# $ComputerList = Get-Content "C:\users\p432358\desktop\bios.txt"
+
+#Or Pull from AD like this
+ $ComputerList = (Get-ADComputer -Filter * -SearchBase "ou=Kadlec,ou=Client Devices,dc=wa,dc=providence,dc=org").Name 
+
+# $ComputerList = Get-Content "C:\computers.txt"
+
+ -split [environment]::NewLine
+ 
+$TimeStamp = (Get-Date).ToString('yyyy-MM-dd_-_HH-mm-ss')
+$ReportPath = $env:TEMP
+#Change ReportPath to where you want the output file to be
+$ReportPath = "C:\Intel"
+$ReportFile = 'SystemReport_-_{0}.csv' -f $TimeStamp
+$FullReportFile = Join-Path -Path $ReportPath -ChildPath $ReportFile
+ 
+$NoResponse = '_n/a_'
+ 
+$IC_ScriptBlock = {
+    $CIM_CS = Get-CimInstance -ClassName CIM_ComputerSystem -OperationTimeoutSec 10
+    $CIM_BE = Get-CimInstance -ClassName CIM_BIOSElement -OperationTimeoutSec 10
+    $CIM_Processor = Get-CimInstance -ClassName CIM_Processor -OperationTimeoutSec 10
+    $CIM_OS = Get-CimInstance -ClassName CIM_OperatingSystem -OperationTimeoutSec 10
+    $CIM_Ram = Get-CimInstance -ClassName CIM_PhysicalMemory -OperationTimeoutSec 10
+    $CIM_HDD = Get-CimInstance Win32_LogicalDisk -Filter drivetype=3 -OperationTimeoutSec 10
+    Write-Host $CIM_CS.Name
+
+           
+
+    [PSCustomObject]@{
+        ComputerName = $CIM_CS.Name
+        Processor = $CIM_Processor.Name
+        # this may be an array in a multi-processor system
+        InstalledRAM_GB = [math]::Round(($CIM_Ram.Capacity |
+            Measure-Object -Sum).Sum / 1GB, 2)
+        Model = $CIM_CS.Model
+        SerialNumber = $CIM_BE.SerialNumber
+        HDD = ($CIM_HDD.FreeSpace/1GB)
+        OS_Name = $CIM_OS.Caption
+        OS_InstallDate = $CIM_OS.InstallDate.ToString('yyyy-MM-dd')
+        }
+    }
+$IC_Params = @{
+    ComputerName = $ComputerList
+    ScriptBlock = $IC_ScriptBlock
+    ErrorAction = 'SilentlyContinue'
+    }
+$RespondingSystems = Invoke-Command @IC_Params -ThrottleLimit 25
+ 
+$NOT_RespondingSystems = $ComputerList.Where({
+    # these two variants are needed to deal with an ipv6 localhost address
+    "[$_]" -notin $RespondingSystems.PSComputerName -and
+    $_ -notin $RespondingSystems.PSComputerName
+    }).
+    ForEach({
+        [PSCustomObject]@{
+            ComputerName = $_
+            Processor = $NoResponse
+            InstalledRAM_GB = $NoResponse
+            Model = $NoResponse
+            SerialNumber = $NoResponse
+            HDD = $NoResponse
+            OS_Name = $NoResponse
+            OS_InstallDate = $NoResponse
+            }
+        })
+ 
+$RespondingSystems = $RespondingSystems |
+    Select-Object -Property * -ExcludeProperty PSComputerName, PSShowComputerName, RunspaceId
+ 
+$AllSystems = $RespondingSystems + $NOT_RespondingSystems
+ 
+# show on screen
+$AllSystems
+ 
+# send to CSV
+$AllSystems |
+    Export-Csv -LiteralPath $FullReportFile -NoTypeInformation
+
+$Stopwatch.Elapsed.TotalSeconds
